@@ -483,6 +483,7 @@ const ChatRoom: React.FC = () => {
   const [onlineUsers, setOnlineUsers] = useState<User[]>([]);
   const isNearBottomRef = useRef(true);
   const isManuallyClosedRef = useRef(false);
+  const imageScrollSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [expandedImages, setExpandedImages] = useState<Set<string>>(new Set()); // 添加展开图片的状态
 
   // 读取布局模式，top 模式下需要额外减去 header 高度避免出现滚动条
@@ -903,6 +904,31 @@ const ChatRoom: React.FC = () => {
     });
     isNearBottomRef.current = true;
   }, [firstItemIndex]);
+
+  // 图片加载后会触发 Virtuoso 重新测量行高，需要在布局稳定前多次校正底部位置。
+  const syncBottomAfterImageLoad = useCallback((force = false) => {
+    if (!force && !isNearBottomRef.current) return;
+
+    const sync = () => {
+      if (force || isNearBottomRef.current) {
+        messageListRef.current?.autoscrollToBottom();
+      }
+    };
+
+    sync();
+    requestAnimationFrame(() => {
+      sync();
+      requestAnimationFrame(sync);
+    });
+
+    if (imageScrollSyncTimerRef.current) {
+      clearTimeout(imageScrollSyncTimerRef.current);
+    }
+    imageScrollSyncTimerRef.current = setTimeout(() => {
+      imageScrollSyncTimerRef.current = null;
+      sync();
+    }, 300);
+  }, []);
 
   // 修改计算高度的函数
   const updateListHeight = useCallback(() => {
@@ -2373,7 +2399,7 @@ const ChatRoom: React.FC = () => {
           <MessageContent
             content={content}
             onImageLoad={() => {
-              // 图片加载完成后,如果是最新消息则滚动到底部
+              // 图片加载会改变动态行高，最新消息仍在底部附近时继续贴住底部。
               const currentMessages = messagesRef.current;
               const lastMessage = currentMessages[currentMessages.length - 1];
               const isLatestMessage = lastMessage?.content === content;
@@ -2381,8 +2407,7 @@ const ChatRoom: React.FC = () => {
                 isLatestMessage &&
                 (isNearBottomRef.current || lastMessage?.sender.id === String(currentUser?.id))
               ) {
-                // 图片会改变动态行高，让 Virtuoso 在测量后继续贴住底部。
-                setTimeout(() => messageListRef.current?.autoscrollToBottom(), 200);
+                syncBottomAfterImageLoad(lastMessage?.sender.id === String(currentUser?.id));
               }
             }}
           />
@@ -2399,11 +2424,14 @@ const ChatRoom: React.FC = () => {
     }
     return <MessageContent content={content} />;
   }, [handleInviteClick, isSpeedMode, expandedImages, currentUser?.id,
-      scrollToBottom]);
+      scrollToBottom, syncBottomAfterImageLoad]);
 
   // 在组件卸载时清理定时器
   useEffect(() => {
     return () => {
+      if (imageScrollSyncTimerRef.current) {
+        clearTimeout(imageScrollSyncTimerRef.current);
+      }
       // 清理红包防抖定时器
       if (redPacketDebounceRef.current) {
         clearTimeout(redPacketDebounceRef.current);
